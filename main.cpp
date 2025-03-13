@@ -9,10 +9,25 @@ int main(int argc, char *argv[]) {
 */
 #include <iostream>
 #include <fstream>
-#define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#include "stb_image_resize2.h"
+#include "stb_image_write.h"
 #include <vector>
 #include <cmath>
+
+using std::cout;
+
+class imageLoader
+{
+    public:
+        imageLoader(int frameSize, int tableRows){}
+        ~imageLoader(){}
+        bool LoadFromFile(const std::string& imagePath);
+    private:
+        unsigned char* rawImageData;
+        int m_frameSize;
+        int m_tableRows;
+};
 
 // WAV header structure
 struct WavHeader {
@@ -45,6 +60,7 @@ bool imageToWavetable(const std::string& imagePath, const std::string& wavetable
         return false;
     }
     
+    
     // Convert to grayscale
     std::vector<float> grayscaleData(width * height);
     for (int i = 0; i < width * height; ++i) {
@@ -53,22 +69,43 @@ bool imageToWavetable(const std::string& imagePath, const std::string& wavetable
         unsigned char b = channels > 2 ? imgData[i * channels + 2] : r;
         grayscaleData[i] = (0.2989f * r + 0.587f * g + 0.114f * b) / 255.0f;
     }
+    //stbi_write_jpg("grayscale.jpg", width, height, 1, &grayscaleData[0], 100);
     stbi_image_free(imgData);
-    
-    // Resize (crude method, nearest neighbor)
+
     std::vector<float> resizedData(targetFrameSize * height);
+#if 1    
+    // Resize (crude method, nearest neighbor)
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < targetFrameSize; ++x) {
             int originalX = static_cast<int>(x * (static_cast<float>(width) / targetFrameSize));
             resizedData[y * targetFrameSize + x] = grayscaleData[y * width + originalX];
         }
     }
-    
+#endif
+
+    //stbir_pixel_layout layout;
+    //stbir_resize_float_linear(&grayscaleData[0], width, height, 256, &resizedData[0], targetFrameSize, height, 256, STBIR_1CHANNEL);    
+    //std::vector<float> sampleData(targetFrameSize * 64); // force to 64 rows
+
+    int rowSampleModulus = height / 256;
+    //cout << "row modulus is " << rowSampleModulus << "\n";
     // Normalize to -1 to 1 and create wavetable
-    std::vector<int16_t> wavetableData(targetFrameSize * height);
-    for (int i = 0; i < targetFrameSize * height; ++i) {
-        float normalizedSample = resizedData[i] * 2.0f - 1.0f;
-        wavetableData[i] = static_cast<int16_t>(normalizedSample * 32767.0f);
+    std::vector<int16_t> wavetableData(targetFrameSize * 256);
+    int writeRow = 0;
+    for (int row = 0; row < height; row++)
+    {
+        // reduce image sample to end up at 64 rows in table
+        if (row % rowSampleModulus == 0)
+        {
+            cout << "sampling row# " << row << " as wavtable# " << writeRow << "\n";
+            for (int i = 0; i < targetFrameSize; ++i)
+            {            
+                float normalizedSample = resizedData[row * targetFrameSize + i] * 2.0f - 1.0f;
+                wavetableData[writeRow * targetFrameSize + i] = static_cast<int16_t>(normalizedSample * 32767.0f);
+            }
+            writeRow++;
+            if (writeRow == 256) break;
+        }
     }
     
     // Create WAV header
