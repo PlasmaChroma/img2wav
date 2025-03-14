@@ -52,9 +52,16 @@ class imageManager
 bool imageManager::LoadFromFile(const std::string& imagePath)
 {
     // only accepting RGB 3 channel images for now; could be enhanced to handle different images
-    m_rawImageData = stbi_load(imagePath.c_str(), &m_width, &m_height, &m_channels, 3);
-    if (!m_rawImageData || (m_channels != 3)) {
-        std::cerr << "Error loading image: " << imagePath << std::endl;
+    m_rawImageData = stbi_load(imagePath.c_str(), &m_width, &m_height, &m_channels, 0);
+#if 0    
+    if (m_channels != 3)
+    {
+        std::cerr << "Not a 3 channel image: " << imagePath << std::endl;
+        return false;
+    }
+#endif    
+    if (!m_rawImageData) {
+        std::cerr << "Unknown error loading image: " << imagePath << std::endl;
         return false;
     }
 
@@ -96,10 +103,11 @@ std::vector<int16_t> imageManager::GetProcessedData(void)
 
     int rowSampleModulus = m_height / m_tableRows;
     //cout << "row modulus is " << rowSampleModulus << "\n";
-    // Normalize to -1 to 1 and create wavetable
+    // Normalize to -1 to 1 and create wavetable data
     std::vector<int16_t> wavetableData(m_frameSize * m_tableRows);
     int writeRow = 0;
-    for (int row = 0; row < m_height; row++)
+    // nagivate this data backwards because ableton puts first sample in bottom of the table
+    for (int row = m_height; row > 0; row--)
     {
         // reduce image sample to end up at 64 rows in table
         if (row % rowSampleModulus == 0)
@@ -125,7 +133,7 @@ class WaveTableWriter
             : m_frameSize(frameSize), m_tableRows(tableRows) {}
         ~WaveTableWriter() {}        
         bool GetDataFromImageFile(const std::string& imagePath);
-        bool WriteWaveTableToFile(const std::string& filename);
+        bool WriteWaveTableToFile(const std::string& filename, bool invert);
         int TrimData(uint16_t thresholdVariance);
         void PrintRowMinMax(void);
     private:
@@ -151,7 +159,7 @@ bool WaveTableWriter::GetDataFromImageFile(const std::string& imagePath)
     return true;
 }
 
-bool WaveTableWriter::WriteWaveTableToFile(const std::string& filename)
+bool WaveTableWriter::WriteWaveTableToFile(const std::string& filename, bool invert)
 {
     if (!m_dataReady) {
         std::cerr << "Data is not ready for writing!" << std::endl;
@@ -178,6 +186,14 @@ bool WaveTableWriter::WriteWaveTableToFile(const std::string& filename)
     // Write header
     wavFile.write(reinterpret_cast<const char*>(&header), sizeof(WavHeader_t));
     
+    if (invert)
+    {
+        for (auto &x : m_wavData)
+        {
+            x = x * -1;
+        }
+    }
+
     // Write audio data
     wavFile.write(reinterpret_cast<const char*>(m_wavData.data()), m_wavData.size() * sizeof(int16_t));
     
@@ -245,14 +261,16 @@ void WaveTableWriter::PrintRowMinMax(void)
 
 int main(int argc, char *argv[])
 {    
-    std::string imagePath = "image.jpg";
+    std::string imagePath = "image.png";
     std::string wavetablePath = "wavetable.wav";
+    std::string wavetablePathInv = "wavetable_inverted.wav";
 
     WaveTableWriter wt(1024, 256); // maximum table that Ableton will accept for user data
     wt.GetDataFromImageFile(imagePath);
     wt.PrintRowMinMax();
     cout << "Trimmed " << wt.TrimData(3000) << " rows under 3k variance.\n";
-    wt.WriteWaveTableToFile(wavetablePath);
+    wt.WriteWaveTableToFile(wavetablePath, false);
+    wt.WriteWaveTableToFile(wavetablePathInv, true);
 
     return 0;
 }
