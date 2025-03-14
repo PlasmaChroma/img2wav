@@ -1,4 +1,5 @@
 #include <iostream>
+#include <stdio.h>
 #include <fstream>
 #include "stb_image.h"
 #include "stb_image_resize2.h"
@@ -82,46 +83,63 @@ bool imageManager::LoadFromFile(const std::string& imagePath)
 
 std::vector<int16_t> imageManager::GetProcessedData(void)
 {
+    // ----- Start by resizing the image to target wavetable size -----
+    int dst_width = m_frameSize;
+    int dst_height = m_tableRows;
+    
+    // Allocate memory for the resized image (could be refactored)
+    unsigned char *dst_data = (unsigned char*)malloc(dst_width * dst_height * m_channels);
+    
+    if (!dst_data) {
+        std::cerr << "Memory allocation failed\n";
+        exit(1);
+    }
+    
+    // Perform the resize operation using stbir_resize_uint8_linear
+    unsigned char* result = stbir_resize_uint8_linear(
+        m_rawImageData,  // source image data 
+        m_width,         // source width
+        m_height,        // source height
+        0,               // source stride in bytes (0 = computed automatically)
+        dst_data,        // destination image data
+        dst_width,       // destination width
+        dst_height,      // destination height
+        0,               // destination stride in bytes (0 = computed automatically)
+        (stbir_pixel_layout)m_channels // number of channels
+    );
+    
+    if (result == 0) {
+        printf("Resize operation failed\n");
+        free(dst_data);
+        exit(1);
+    }
+    
+    printf("Image resized successfully to %d x %d\n", dst_width, dst_height);
+
     // Convert to grayscale
-    std::vector<float> grayscaleData(m_width * m_height);
-    for (int i = 0; i < m_width * m_height; ++i) {
-        unsigned char r = m_rawImageData[i * m_channels];
+    std::vector<float> grayscaleData(m_frameSize * m_tableRows);
+    for (int i = 0; i < m_frameSize * m_tableRows; ++i) {
+        unsigned char r = dst_data[i * m_channels];
         unsigned char g = m_channels > 1 ? m_rawImageData[i * m_channels + 1] : r;
         unsigned char b = m_channels > 2 ? m_rawImageData[i * m_channels + 2] : r;
         grayscaleData[i] = (0.2989f * r + 0.587f * g + 0.114f * b) / 255.0f;
+        if (i < 1024) cout << " " << grayscaleData[i] << ",";
     }
 
-    std::vector<float> resizedData(m_frameSize * m_height);   
-    // Resize down (crude version, nearest neighbor)
-    // this algorithm samples single pixels proprotionally across the width to arrange the new width
-    for (int y = 0; y < m_height; ++y) {
-        for (int x = 0; x < m_frameSize; ++x) {
-            int originalX = static_cast<int>(x * (static_cast<float>(m_width) / m_frameSize));
-            resizedData[y * m_frameSize + x] = grayscaleData[y * m_width + originalX];
-        }
-    }
-
-    int rowSampleModulus = m_height / m_tableRows;
-    //cout << "row modulus is " << rowSampleModulus << "\n";
-    // Normalize to -1 to 1 and create wavetable data
     std::vector<int16_t> wavetableData(m_frameSize * m_tableRows);
-    int writeRow = 0;
-    // nagivate this data backwards because ableton puts first sample in bottom of the table
+    // nagivate this data in reverse, because ableton puts the first sample at the bottom
     for (int row = m_height; row > 0; row--)
     {
-        // reduce image sample to end up at 64 rows in table
-        if (row % rowSampleModulus == 0)
-        {
-            //cout << "sampling row# " << row << " as wavtable# " << writeRow << "\n";
-            for (int i = 0; i < m_frameSize; ++i)
-            {            
-                float normalizedSample = resizedData[row * m_frameSize + i] * 2.0f - 1.0f;
-                wavetableData[writeRow * m_frameSize + i] = static_cast<int16_t>(normalizedSample * 32767.0f);
-            }
-            writeRow++;
-            if (writeRow == m_tableRows) break; // this is the size limit for the wavetable, trailing rows are ignored
+        //cout << "sampling row# " << row << " as wavtable# " << writeRow << "\n";
+        for (int i = 0; i < m_frameSize; ++i)
+        {            
+            float normalizedSample = grayscaleData[row * m_frameSize + i] * 2.0f - 1.0f;
+            wavetableData[row * m_frameSize + i] = static_cast<int16_t>(normalizedSample * 32767.0f);
         }
     }
+
+    // Clean up
+    free(dst_data);
 
     return wavetableData;
 }
@@ -261,13 +279,13 @@ void WaveTableWriter::PrintRowMinMax(void)
 
 int main(int argc, char *argv[])
 {    
-    std::string imagePath = "image.png";
+    std::string imagePath = "image.jpg";
     std::string wavetablePath = "wavetable.wav";
     std::string wavetablePathInv = "wavetable_inverted.wav";
 
     WaveTableWriter wt(1024, 256); // maximum table that Ableton will accept for user data
     wt.GetDataFromImageFile(imagePath);
-    wt.PrintRowMinMax();
+    //wt.PrintRowMinMax();
     cout << "Trimmed " << wt.TrimData(3000) << " rows under 3k variance.\n";
     wt.WriteWaveTableToFile(wavetablePath, false);
     wt.WriteWaveTableToFile(wavetablePathInv, true);
