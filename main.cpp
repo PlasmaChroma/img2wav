@@ -17,17 +17,92 @@ int main(int argc, char *argv[]) {
 
 using std::cout;
 
-class imageLoader
+struct WavetableData_t
+{
+    std::vector<int16_t> waveData;
+    int frameSize = 1024;
+    int rowSize = 256;
+};
+
+class imageManager
 {
     public:
-        imageLoader(int frameSize, int tableRows){}
-        ~imageLoader(){}
+        imageManager(int frameSize = 1024, int tableRows = 256)
+            : m_frameSize(frameSize), m_tableRows(tableRows)
+            {}
+        ~imageManager()
+            {stbi_image_free(m_rawImageData);}
         bool LoadFromFile(const std::string& imagePath);
+        WavetableData_t GetProcessedData(void);
+
     private:
-        unsigned char* rawImageData;
+        unsigned char* m_rawImageData;
         int m_frameSize;
         int m_tableRows;
+        int m_height;
+        int m_width;
+        int m_channels;
 };
+
+bool imageManager::LoadFromFile(const std::string& imagePath)
+{
+    m_rawImageData = stbi_load(imagePath.c_str(), &m_width, &m_height, &m_channels, 0);
+    if (!m_rawImageData) {
+        std::cerr << "Error loading image: " << imagePath << std::endl;
+        return false;
+    }
+    return true;
+}
+
+WavetableData_t imageManager::GetProcessedData(void)
+{
+    WavetableData_t r;
+    r.frameSize = m_frameSize;
+    r.rowSize = m_tableRows;
+
+    // Convert to grayscale
+    std::vector<float> grayscaleData(m_width * m_height);
+    for (int i = 0; i < m_width * m_height; ++i) {
+        unsigned char r = m_rawImageData[i * m_channels];
+        unsigned char g = m_channels > 1 ? m_rawImageData[i * m_channels + 1] : r;
+        unsigned char b = m_channels > 2 ? m_rawImageData[i * m_channels + 2] : r;
+        grayscaleData[i] = (0.2989f * r + 0.587f * g + 0.114f * b) / 255.0f;
+    }
+
+    std::vector<float> resizedData(m_frameSize * m_height);   
+    // Resize down (crude version, nearest neighbor)
+    // this algorithm samples single pixels proprotionally across the width to arrange the new width
+    for (int y = 0; y < m_height; ++y) {
+        for (int x = 0; x < m_frameSize; ++x) {
+            int originalX = static_cast<int>(x * (static_cast<float>(m_width) / m_frameSize));
+            resizedData[y * m_frameSize + x] = grayscaleData[y * m_width + originalX];
+        }
+    }
+
+    int rowSampleModulus = m_height / 256;
+    //cout << "row modulus is " << rowSampleModulus << "\n";
+    // Normalize to -1 to 1 and create wavetable
+    std::vector<int16_t> wavetableData(m_frameSize * 256);
+    int writeRow = 0;
+    for (int row = 0; row < m_height; row++)
+    {
+        // reduce image sample to end up at 64 rows in table
+        if (row % rowSampleModulus == 0)
+        {
+            cout << "sampling row# " << row << " as wavtable# " << writeRow << "\n";
+            for (int i = 0; i < m_frameSize; ++i)
+            {            
+                float normalizedSample = resizedData[row * m_frameSize + i] * 2.0f - 1.0f;
+                wavetableData[writeRow * m_frameSize + i] = static_cast<int16_t>(normalizedSample * 32767.0f);
+            }
+            writeRow++;
+            if (writeRow == 256) break; // this is the size limit for the wavetable, trailing rows are ignored
+        }
+    }
+
+    r.waveData = std::move(wavetableData);
+    return r;
+}
 
 // WAV header structure
 struct WavHeader {
