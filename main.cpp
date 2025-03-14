@@ -1,12 +1,3 @@
-/*
-#include "stb_image.h"
-#include <iostream>
-using std::cout;
-
-int main(int argc, char *argv[]) {
-    cout << "Done!\n";
-}
-*/
 #include <iostream>
 #include <fstream>
 #include "stb_image.h"
@@ -14,14 +5,28 @@ int main(int argc, char *argv[]) {
 #include "stb_image_write.h"
 #include <vector>
 #include <cmath>
+#include <algorithm>
 
 using std::cout;
 
-struct WavetableData_t
-{
-    std::vector<int16_t> waveData;
-    int frameSize = 1024;
-    int rowSize = 256;
+// WAV header structure
+struct WavHeader_t {
+    // RIFF chunk
+    char riffId[4] = {'R', 'I', 'F', 'F'};
+    uint32_t riffSize;
+    char waveId[4] = {'W', 'A', 'V', 'E'};
+    // fmt chunk
+    char fmtId[4] = {'f', 'm', 't', ' '};
+    uint32_t fmtSize = 16;
+    uint16_t audioFormat = 1; // PCM
+    uint16_t numChannels = 1; // Mono
+    uint32_t sampleRate = 44100;
+    uint32_t byteRate;        // SampleRate * NumChannels * BitsPerSample/8
+    uint16_t blockAlign;      // NumChannels * BitsPerSample/8
+    uint16_t bitsPerSample = 16;
+    // data chunk
+    char dataId[4] = {'d', 'a', 't', 'a'};
+    uint32_t dataSize;
 };
 
 class imageManager
@@ -33,7 +38,7 @@ class imageManager
         ~imageManager()
             {stbi_image_free(m_rawImageData);}
         bool LoadFromFile(const std::string& imagePath);
-        WavetableData_t GetProcessedData(void);
+        std::vector<int16_t> GetProcessedData(void);
 
     private:
         unsigned char* m_rawImageData;
@@ -46,20 +51,30 @@ class imageManager
 
 bool imageManager::LoadFromFile(const std::string& imagePath)
 {
-    m_rawImageData = stbi_load(imagePath.c_str(), &m_width, &m_height, &m_channels, 0);
-    if (!m_rawImageData) {
+    // only accepting RGB 3 channel images for now; could be enhanced to handle different images
+    m_rawImageData = stbi_load(imagePath.c_str(), &m_width, &m_height, &m_channels, 3);
+    if (!m_rawImageData || (m_channels != 3)) {
         std::cerr << "Error loading image: " << imagePath << std::endl;
+        return false;
+    }
+
+    // note: resize algo is able to expand width so size is not required
+#if 0
+    if (m_width < m_frameSize) {
+        std::cerr << "Image is not wide enough for frame sizing\n" << std::endl;
+        return false;
+    }
+#endif
+
+    if (m_height < m_tableRows) {
+        std::cerr << "Image not tall enough for requested rows\n" << std::endl;
         return false;
     }
     return true;
 }
 
-WavetableData_t imageManager::GetProcessedData(void)
+std::vector<int16_t> imageManager::GetProcessedData(void)
 {
-    WavetableData_t r;
-    r.frameSize = m_frameSize;
-    r.rowSize = m_tableRows;
-
     // Convert to grayscale
     std::vector<float> grayscaleData(m_width * m_height);
     for (int i = 0; i < m_width * m_height; ++i) {
@@ -79,147 +94,165 @@ WavetableData_t imageManager::GetProcessedData(void)
         }
     }
 
-    int rowSampleModulus = m_height / 256;
+    int rowSampleModulus = m_height / m_tableRows;
     //cout << "row modulus is " << rowSampleModulus << "\n";
     // Normalize to -1 to 1 and create wavetable
-    std::vector<int16_t> wavetableData(m_frameSize * 256);
+    std::vector<int16_t> wavetableData(m_frameSize * m_tableRows);
     int writeRow = 0;
     for (int row = 0; row < m_height; row++)
     {
         // reduce image sample to end up at 64 rows in table
         if (row % rowSampleModulus == 0)
         {
-            cout << "sampling row# " << row << " as wavtable# " << writeRow << "\n";
+            //cout << "sampling row# " << row << " as wavtable# " << writeRow << "\n";
             for (int i = 0; i < m_frameSize; ++i)
             {            
                 float normalizedSample = resizedData[row * m_frameSize + i] * 2.0f - 1.0f;
                 wavetableData[writeRow * m_frameSize + i] = static_cast<int16_t>(normalizedSample * 32767.0f);
             }
             writeRow++;
-            if (writeRow == 256) break; // this is the size limit for the wavetable, trailing rows are ignored
+            if (writeRow == m_tableRows) break; // this is the size limit for the wavetable, trailing rows are ignored
         }
     }
 
-    r.waveData = std::move(wavetableData);
-    return r;
+    return wavetableData;
 }
 
-// WAV header structure
-struct WavHeader {
-    // RIFF chunk
-    char riffId[4] = {'R', 'I', 'F', 'F'};
-    uint32_t riffSize;
-    char waveId[4] = {'W', 'A', 'V', 'E'};
-    
-    // fmt chunk
-    char fmtId[4] = {'f', 'm', 't', ' '};
-    uint32_t fmtSize = 16;
-    uint16_t audioFormat = 1; // PCM
-    uint16_t numChannels = 1; // Mono
-    uint32_t sampleRate = 44100;
-    uint32_t byteRate;        // SampleRate * NumChannels * BitsPerSample/8
-    uint16_t blockAlign;      // NumChannels * BitsPerSample/8
-    uint16_t bitsPerSample = 16;
-    
-    // data chunk
-    char dataId[4] = {'d', 'a', 't', 'a'};
-    uint32_t dataSize;
+class WaveTableWriter
+{
+    public:
+        WaveTableWriter(int frameSize = 1024, int tableRows = 256)
+            : m_frameSize(frameSize), m_tableRows(tableRows) {}
+        ~WaveTableWriter() {}        
+        bool GetDataFromImageFile(const std::string& imagePath);
+        bool WriteWaveTableToFile(const std::string& filename);
+        int TrimData(uint16_t thresholdVariance);
+        void PrintRowMinMax(void);
+    private:
+        int m_frameSize;
+        int m_tableRows;
+        std::vector<int16_t> m_wavData;
+        bool m_dataReady = false;
 };
 
-// Function to convert image to wavetable
-bool imageToWavetable(const std::string& imagePath, const std::string& wavetablePath, int targetFrameSize = 1024) {
-    int width, height, channels;
-    unsigned char *imgData = stbi_load(imagePath.c_str(), &width, &height, &channels, 0);
-    if (!imgData) {
-        std::cerr << "Error loading image: " << imagePath << std::endl;
+bool WaveTableWriter::GetDataFromImageFile(const std::string& imagePath)
+{
+    imageManager im(m_frameSize, m_tableRows);
+
+    if (im.LoadFromFile(imagePath))
+    {
+        m_wavData = im.GetProcessedData();
+        m_dataReady = true;
+    } else {
+        std::cerr << "Image loader unable to process file: " << imagePath << std::endl;
         return false;
     }
-    
-    
-    // Convert to grayscale
-    std::vector<float> grayscaleData(width * height);
-    for (int i = 0; i < width * height; ++i) {
-        unsigned char r = imgData[i * channels];
-        unsigned char g = channels > 1 ? imgData[i * channels + 1] : r;
-        unsigned char b = channels > 2 ? imgData[i * channels + 2] : r;
-        grayscaleData[i] = (0.2989f * r + 0.587f * g + 0.114f * b) / 255.0f;
-    }
-    //stbi_write_jpg("grayscale.jpg", width, height, 1, &grayscaleData[0], 100);
-    stbi_image_free(imgData);
 
-    std::vector<float> resizedData(targetFrameSize * height);
-#if 1    
-    // Resize (crude method, nearest neighbor)
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < targetFrameSize; ++x) {
-            int originalX = static_cast<int>(x * (static_cast<float>(width) / targetFrameSize));
-            resizedData[y * targetFrameSize + x] = grayscaleData[y * width + originalX];
-        }
-    }
-#endif
+    return true;
+}
 
-    //stbir_pixel_layout layout;
-    //stbir_resize_float_linear(&grayscaleData[0], width, height, 256, &resizedData[0], targetFrameSize, height, 256, STBIR_1CHANNEL);    
-    //std::vector<float> sampleData(targetFrameSize * 64); // force to 64 rows
-
-    int rowSampleModulus = height / 256;
-    //cout << "row modulus is " << rowSampleModulus << "\n";
-    // Normalize to -1 to 1 and create wavetable
-    std::vector<int16_t> wavetableData(targetFrameSize * 256);
-    int writeRow = 0;
-    for (int row = 0; row < height; row++)
-    {
-        // reduce image sample to end up at 64 rows in table
-        if (row % rowSampleModulus == 0)
-        {
-            cout << "sampling row# " << row << " as wavtable# " << writeRow << "\n";
-            for (int i = 0; i < targetFrameSize; ++i)
-            {            
-                float normalizedSample = resizedData[row * targetFrameSize + i] * 2.0f - 1.0f;
-                wavetableData[writeRow * targetFrameSize + i] = static_cast<int16_t>(normalizedSample * 32767.0f);
-            }
-            writeRow++;
-            if (writeRow == 256) break;
-        }
+bool WaveTableWriter::WriteWaveTableToFile(const std::string& filename)
+{
+    if (!m_dataReady) {
+        std::cerr << "Data is not ready for writing!" << std::endl;
+        return false;
     }
-    
+
     // Create WAV header
-    WavHeader header;
+    WavHeader_t header;
     header.numChannels = 1; // Mono
     header.sampleRate = 44100;
     header.bitsPerSample = 16;
     header.blockAlign = header.numChannels * (header.bitsPerSample / 8);
     header.byteRate = header.sampleRate * header.blockAlign;
-    header.dataSize = wavetableData.size() * sizeof(int16_t);
+    header.dataSize = m_wavData.size() * sizeof(int16_t);
     header.riffSize = 36 + header.dataSize; // 36 = size of header without RIFF chunk
-    
+
     // Write to WAV file
-    std::ofstream wavFile(wavetablePath, std::ios::binary);
+    std::ofstream wavFile(filename, std::ios::binary);
     if (!wavFile.is_open()) {
-        std::cerr << "Error opening WAV file: " << wavetablePath << std::endl;
+        std::cerr << "Error opening WAV file: " << filename << std::endl;
         return false;
     }
     
     // Write header
-    wavFile.write(reinterpret_cast<const char*>(&header), sizeof(WavHeader));
+    wavFile.write(reinterpret_cast<const char*>(&header), sizeof(WavHeader_t));
     
     // Write audio data
-    wavFile.write(reinterpret_cast<const char*>(wavetableData.data()), 
-                  wavetableData.size() * sizeof(int16_t));
+    wavFile.write(reinterpret_cast<const char*>(m_wavData.data()), m_wavData.size() * sizeof(int16_t));
     
     wavFile.close();
-    std::cout << "Created WAV file with " << height << " frames of " 
-              << targetFrameSize << " samples each" << std::endl;
+    std::cout << "Created WAV file with " << m_tableRows << " rows of " 
+              << m_frameSize << " samples each" << std::endl;
+
     return true;
 }
 
-int main() {
+int WaveTableWriter::TrimData(uint16_t thresholdVariance)
+{
+    if (!m_dataReady) {
+        std::cerr << "Data is not ready!" << std::endl;
+        return 0;
+    }
+    std::vector<int16_t> filteredData;
+    int filterCounter = 0;
+    // iterate through rows
+    for (int r = 0; r < m_tableRows; ++r)
+    {
+        std::vector<int16_t> rowSample;
+        // put one row into our sample vector so we can just use algorithm
+        // note: inefficient but with the data sizes we are dealing with almost irrelevent
+        for (int x = 0; x < m_frameSize; ++x)
+        {            
+            int index = (r * m_frameSize) + x;
+            rowSample.push_back(m_wavData[index]);
+        }
+        auto minmax = std::minmax_element(rowSample.begin(), rowSample.end());
+        int variance = (*minmax.second - *minmax.first);
+        if (variance > thresholdVariance) {
+            filteredData.insert(filteredData.end(), rowSample.begin(), rowSample.end());
+        } else {
+            filterCounter++;
+        }
+    }
+    m_wavData = filteredData;
+    return filterCounter;
+}
+
+void WaveTableWriter::PrintRowMinMax(void)
+{
+    if (!m_dataReady) {
+        std::cerr << "Data is not ready!" << std::endl;
+        return;
+    }
+
+    // iterate through rows
+    for (int r = 0; r < m_tableRows; ++r)
+    {
+        std::vector<int16_t> rowSample;
+        // put one row into our sample vector so we can just use algorithm
+        // note: inefficient but with the data sizes we are dealing with almost irrelevent
+        for (int x = 0; x < m_frameSize; ++x)
+        {            
+            int index = (r * m_frameSize) + x;
+            rowSample.push_back(m_wavData[index]);
+        }
+        auto minmax = std::minmax_element(rowSample.begin(), rowSample.end());
+        cout << "Row# " << r << " min: " << *minmax.first << " max: " << *minmax.second 
+            << " variance " << (*minmax.second - *minmax.first) << std::endl;
+    }
+}
+
+int main(int argc, char *argv[])
+{    
     std::string imagePath = "image.jpg";
     std::string wavetablePath = "wavetable.wav";
-    if (imageToWavetable(imagePath, wavetablePath)) {
-        std::cout << "Wavetable created successfully: " << wavetablePath << std::endl;
-    } else {
-        std::cerr << "Failed to create wavetable." << std::endl;
-    }
+
+    WaveTableWriter wt(1024, 256); // maximum table that Ableton will accept for user data
+    wt.GetDataFromImageFile(imagePath);
+    wt.PrintRowMinMax();
+    cout << "Trimmed " << wt.TrimData(3000) << " rows under 3k variance.\n";
+    wt.WriteWaveTableToFile(wavetablePath);
+
     return 0;
 }
