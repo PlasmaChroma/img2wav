@@ -1,12 +1,12 @@
 #include <iostream>
 #include <stdio.h>
 #include <fstream>
-#include "stb_image.h"
-#include "stb_image_resize2.h"
-#include "stb_image_write.h"
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include "stb_image.h"
+#include "stb_image_resize2.h"
+#include "stb_image_write.h"
 
 using std::cout;
 
@@ -21,7 +21,7 @@ struct WavHeader_t {
     uint32_t fmtSize = 16;
     uint16_t audioFormat = 1; // PCM
     uint16_t numChannels = 1; // Mono
-    uint32_t sampleRate = 44100;
+    uint32_t sampleRate = 48000;
     uint32_t byteRate;        // SampleRate * NumChannels * BitsPerSample/8
     uint16_t blockAlign;      // NumChannels * BitsPerSample/8
     uint16_t bitsPerSample = 16;
@@ -126,9 +126,11 @@ std::vector<int16_t> imageManager::GetProcessedData(void)
         //if (i < 1024) cout << " " << grayscaleData[i] << ",";
     }
 
+    printf("Converted to grayscale\n");
+
     std::vector<int16_t> wavetableData(m_frameSize * m_tableRows);
-    int writeRow = m_height - 1; // use this to write it out backwards (since Ableton starts at bottom)
-    for (int row = 0; row < m_height; row++)
+    int writeRow = m_tableRows - 1; // use this to write it out backwards (since Ableton starts at bottom)
+    for (int row = 0; row < m_tableRows; row++)
     {
         for (int i = 0; i < m_frameSize; ++i)
         {
@@ -139,6 +141,8 @@ std::vector<int16_t> imageManager::GetProcessedData(void)
         }
         writeRow--;
     }
+
+    printf("Converted to wavetable\n");
 
     // Clean up
     free(dst_data);
@@ -189,7 +193,7 @@ bool WaveTableWriter::WriteWaveTableToFile(const std::string& filename, bool inv
     // Create WAV header
     WavHeader_t header;
     header.numChannels = 1; // Mono
-    header.sampleRate = 44100;
+    header.sampleRate = 48000;
     header.bitsPerSample = 16;
     header.blockAlign = header.numChannels * (header.bitsPerSample / 8);
     header.byteRate = header.sampleRate * header.blockAlign;
@@ -291,8 +295,8 @@ int main(int argc, char *argv[])
     WaveTableWriter wt(1024, 256); // maximum table that Ableton will accept for user data
     wt.GetDataFromImageFile(imagePath);
     //wt.PrintRowMinMax();
-    // trim out rows that don't realistically create proper amplitude waves (1/2 height tolarance)
-    cout << "Trimmed " << wt.TrimData(32767) << " rows.\n";
+    // trim boring rows (less than 1/4 AM range)
+    cout << "Trimmed " << wt.TrimData(16384) << " rows.\n";
     wt.WriteWaveTableToFile(wavetablePath, false);
     wt.WriteWaveTableToFile(wavetablePathInv, true);
 
