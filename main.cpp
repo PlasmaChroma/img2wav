@@ -53,26 +53,11 @@ class imageManager
 bool imageManager::LoadFromFile(const std::string& imagePath)
 {
     // only accepting RGB 3 channel images for now; could be enhanced to handle different images
-    m_rawImageData = stbi_load(imagePath.c_str(), &m_width, &m_height, &m_channels, 0);
-#if 0    
-    if (m_channels != 3)
-    {
-        std::cerr << "Not a 3 channel image: " << imagePath << std::endl;
-        return false;
-    }
-#endif    
+    m_rawImageData = stbi_load(imagePath.c_str(), &m_width, &m_height, &m_channels, 0);  
     if (!m_rawImageData) {
         std::cerr << "Unknown error loading image: " << imagePath << std::endl;
         return false;
     }
-
-    // note: resize algo is able to expand width so size is not required
-#if 0
-    if (m_width < m_frameSize) {
-        std::cerr << "Image is not wide enough for frame sizing\n" << std::endl;
-        return false;
-    }
-#endif
 
     if (m_height < m_tableRows) {
         std::cerr << "Image not tall enough for requested rows\n" << std::endl;
